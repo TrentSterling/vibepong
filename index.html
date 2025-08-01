@@ -1,0 +1,510 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VibePong - A Tront.xyz Project</title>
+    <meta name="description" content="VibePong: A hyper-stylized, audio-visual, CPU vs CPU Pong simulation with dynamic physics, powerups, and a full suite of debug tools. A vibecoding project by Trent Sterling.">
+    <meta name="keywords" content="VibePong, Tront, Trent Sterling, Pong, Three.js, JavaScript, generative art, procedural, vibecoding, CPU vs CPU, AI">
+    <meta property="og:title" content="VibePong">
+    <meta property="og:description" content="A hyper-stylized, audio-visual, CPU vs CPU Pong simulation.">
+    <meta property="og:image" content="https://blog.tront.xyz/assets/img/tront.png">
+    <meta property="og:url" content="https://tront.xyz/vibepong">
+    <link rel="icon" href="https://blog.tront.xyz/assets/img/tront.png" type="image/png">
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; opacity: 0; transition: opacity 1s ease-in-out; }
+        .ui-panel {
+            position: absolute; z-index: 100;
+            background: rgba(0,0,0,0.65); padding: 10px; border-radius: 8px;
+            border: 2px solid #0f0; font-family: 'Courier New', Courier, monospace; color: #0f0;
+            opacity: 0;
+            transition: opacity 0.5s ease, transform 0.3s ease;
+        }
+        #ui-container { top: 10px; left: 10px; }
+        .ui-element { margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
+        label { display: inline-block; margin-left: 5px; user-select: none; cursor: pointer; white-space: nowrap; }
+        input[type=range] { margin-left: 10px; }
+        .hidden { opacity: 0 !important; pointer-events: none; transform: translateY(-20px); }
+        #ui-toggle-button, #fps-counter, #mute-button { top: 10px; right: 10px; cursor: pointer; padding: 5px 10px; }
+        #fps-counter { right: auto; left: calc(50% - 30px); border: none; background: none; }
+        #mute-button { right: 120px; }
+        .debug-text { position: absolute; z-index: 50; color: white; font-family: 'Courier New', Courier, monospace; font-size: 12px; line-height: 1.2; text-shadow: 0 0 5px black; pointer-events: none; }
+        .credit-link { color: #0f0; text-decoration: none; }
+        
+        #splash-title {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 5vw; color: #fff;
+            text-shadow: 0 0 10px #fff, 0 0 20px #0f0, 0 0 30px #0f0;
+            opacity: 0; pointer-events: none;
+        }
+        #splash-title.start-animation {
+            animation: fadeInOut 3s ease-in-out forwards;
+        }
+        @keyframes fadeInOut {
+            0% { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+            25% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+            75% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(1.2); }
+        }
+    </style>
+</head>
+<body>
+    <div id="splash-title">VibePong</div>
+    <!-- UI Elements -->
+    <div id="ui-container" class="ui-panel">
+        <div class="ui-element"><label for="speed-slider">Sim Speed</label><input type="range" id="speed-slider" min="0.1" max="12" step="0.1" value="1.8"></div>
+        <div class="ui-element"><label for="ai-predict-slider">AI Prediction</label><input type="range" id="ai-predict-slider" min="0" max="20" step="1" value="8"></div>
+        <div class="ui-element"><label for="ai-error-slider">AI Error</label><input type="range" id="ai-error-slider" min="0" max="3" step="0.1" value="0.5"></div>
+        <hr style="border-color: #0f03;">
+        <div class="ui-element"><label for="debug-target-toggle">Show AI Target</label><input type="checkbox" id="debug-target-toggle" checked></div>
+        <div class="ui-element"><label for="debug-data-toggle">Show AI Data</label><input type="checkbox" id="debug-data-toggle" checked></div>
+        <hr style="border-color: #0f03;">
+        <div style="font-size: 10px; text-align: center;">
+            A project by <a href="https://tront.xyz" target="_blank" class="credit-link">Tront</a> | <a href="https://github.com/tster" target="_blank" class="credit-link">GitHub</a>
+        </div>
+    </div>
+    <div id="ui-toggle-button" class="ui-panel">[ HIDE ]</div>
+    <div id="mute-button" class="ui-panel">[ MUTE ]</div>
+    <div id="fps-counter" class="ui-panel">-- FPS</div>
+
+    <!-- Debug Text (HTML for performance) -->
+    <div id="p1-data" class="debug-text"></div>
+    <div id="p2-data" class="debug-text"></div>
+
+    <script type="importmap"> { "imports": { "three": "https://unpkg.com/three@0.157.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.157.0/examples/jsm/" } } </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+        import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // CONSTANTS
+        const COURT_WIDTH = 24, COURT_HEIGHT = COURT_WIDTH*(window.innerHeight/window.innerWidth);
+        const PADDLE_HEIGHT_NORMAL = 3;
+        const POWERUP_SPAWN_CHANCE = 0.003, POWERUP_MAGNETIC_RADIUS = 5, POWERUP_MAGNETIC_FORCE = 0.06;
+        const TRAIL_LENGTH = 35;
+
+        // GLOBALS
+        let scene, camera, renderer, composer, font, lastTime=0, hue=0;
+        let p1, p2, ball, ballTrail, particleSystem, notificationMesh;
+        let backgroundPlane, backgroundPlane2;
+        let p1Score=0, p2Score=0, p1ScoreMesh, p2ScoreMesh;
+        let spawnedPowerup=null, ghostBalls=[];
+        let p1Debug={group:new THREE.Group()}, p2Debug={group:new THREE.Group()};
+        let crosshairH, crosshairV;
+        const p1DataEl = document.getElementById('p1-data');
+        const p2DataEl = document.getElementById('p2-data');
+
+        class AudioEngine {
+            constructor() { this.audioCtx = null; this.isInitialized = false; this.isMuted = false; }
+            init() { if (this.isInitialized || this.audioCtx) return; this.audioCtx = new(window.AudioContext || window.webkitAudioContext)(); this.isInitialized = true; }
+            toggleMute() { this.isMuted = !this.isMuted; document.getElementById('mute-button').textContent = this.isMuted ? "[ UNMUTE ]" : "[ MUTE ]"; }
+            playSound(type, options = {}) {
+                if (!this.audioCtx || this.audioCtx.state !== 'running' || this.isMuted) return;
+                const now = this.audioCtx.currentTime; const gainNode = this.audioCtx.createGain(); gainNode.connect(this.audioCtx.destination);
+                const randomPitch = 1 + (Math.random() - 0.5) * 0.1;
+                if (type === 'paddleHit') {
+                    const o = this.audioCtx.createOscillator(); o.type = 'sawtooth'; const freq = (options.pitch || 100) * randomPitch;
+                    o.frequency.setValueAtTime(freq, now); gainNode.gain.setValueAtTime(0.1, now); gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
+                    o.connect(gainNode); o.start(now); o.stop(now + 0.2);
+                } else if (type === 'wallHit') {
+                    const noise = this.audioCtx.createBufferSource(); const buffer = this.audioCtx.createBuffer(1, this.audioCtx.sampleRate * 0.1, this.audioCtx.sampleRate);
+                    const data = buffer.getChannelData(0); for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+                    noise.buffer = buffer; const filter = this.audioCtx.createBiquadFilter(); filter.type = 'bandpass'; filter.frequency.value = 3000 * randomPitch; filter.Q.value = 5;
+                    gainNode.gain.setValueAtTime(0.3, now); gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.1);
+                    noise.connect(filter); filter.connect(gainNode); noise.start(now); noise.stop(now + 0.1);
+                } else if (type === 'score') {
+                    const notes = [660, 880];
+                    notes.forEach((freq, i) => { const o = this.audioCtx.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(freq * randomPitch, now + i * 0.1); gainNode.gain.setValueAtTime(0.15, now + i * 0.1); gainNode.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.1 + 0.2); o.connect(gainNode); o.start(now + i * 0.1); o.stop(now + i * 0.1 + 0.2); });
+                } else if (type === 'powerup') {
+                    const notes = [440, 550, 660, 880];
+                    notes.forEach((freq, i) => { const o = this.audioCtx.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(freq * randomPitch, now + i * 0.08); gainNode.gain.setValueAtTime(0.15, now + i * 0.08); gainNode.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.08 + 0.1); o.connect(gainNode); o.start(now + i * 0.08); o.stop(now + i * 0.08 + 0.1); });
+                } else if (type === 'uiClick') {
+                    const o = this.audioCtx.createOscillator(); o.type = 'triangle'; o.frequency.setValueAtTime(800 * randomPitch, now);
+                    gainNode.gain.setValueAtTime(0.1, now); gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.08); o.connect(gainNode); o.start(now); o.stop(now + 0.08);
+                }
+            }
+        }
+        const audioEngine = new AudioEngine();
+
+        const gameState = {
+            ballSpeed: 0.15, ballVelocity: new THREE.Vector3(),
+            isServing: true, gameSpeed: 1.8,
+            debug: { targets: true, data: true },
+            ai: { prediction: 8, error: 0.5 }
+        };
+        
+        const powerupTypes = [
+            { name: 'BIG PADDLE!', color: 0x00ff00, apply: (p) => { p.userData.isSmall = false; p.userData.isBig = true; }},
+            { name: 'PADDLE SHRINK!', color: 0xff0000, apply: (p, o) => { o.userData.isBig = false; o.userData.isSmall = true; }},
+            { name: 'HYPERSPEED!', color: 0x00ffff, apply: () => { gameState.isHyperspeed = true; }},
+            { name: 'MULTIBALL!', color: 0xffaa00, apply: createGhostBalls },
+            { name: 'BIG BALL!', color: 0xff88ff, apply: () => { ball.userData.isBig = true; }},
+            { name: 'FLAT SHOT!', color: 0xffff00, apply: (p) => { p.userData.hasFlatShot = true; }}
+        ];
+
+        // INITIALIZATION
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.OrthographicCamera(-COURT_WIDTH/2, COURT_WIDTH/2, COURT_HEIGHT/2, -COURT_HEIGHT/2, 1, 1000);
+            camera.position.z = 100;
+            renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+            
+            const renderPass = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.2, 0.4, 0.85);
+            bloomPass.threshold = 0.2;
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderPass);
+            composer.addPass(bloomPass);
+
+            setupUI();
+            new FontLoader().load('https://unpkg.com/three@0.157.0/examples/fonts/helvetiker_bold.typeface.json', (f) => { font=f; createSceneElements(); startSequence(); });
+        }
+
+        function createSceneElements() {
+            backgroundPlane = new THREE.Mesh(new THREE.PlaneGeometry(COURT_WIDTH*2, COURT_HEIGHT*2), new THREE.MeshBasicMaterial({vertexColors:true, blending: THREE.AdditiveBlending}));
+            backgroundPlane.position.z = -11;
+            backgroundPlane2 = new THREE.Mesh(new THREE.PlaneGeometry(COURT_WIDTH*2, COURT_HEIGHT*2), new THREE.MeshBasicMaterial({vertexColors:true, blending: THREE.AdditiveBlending, opacity: 0.7}));
+            backgroundPlane2.position.z = -10;
+            scene.add(backgroundPlane, backgroundPlane2);
+
+            const grid = new THREE.GridHelper(COURT_WIDTH, 15, 0x00ffff, 0x003333);
+            grid.position.z = -5; grid.rotation.x = Math.PI/2;
+            scene.add(grid);
+            
+            const crosshairMat = new THREE.LineBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.15, blending: THREE.AdditiveBlending});
+            let geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-COURT_WIDTH/2,0,0), new THREE.Vector3(COURT_WIDTH/2,0,0)]);
+            crosshairH = new THREE.Line(geo, crosshairMat);
+            geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,-COURT_HEIGHT/2,0), new THREE.Vector3(0,COURT_HEIGHT/2,0)]);
+            crosshairV = new THREE.Line(geo, crosshairMat);
+            scene.add(crosshairH, crosshairV);
+
+            const paddleGeo = new THREE.BoxGeometry(0.4, PADDLE_HEIGHT_NORMAL, 1);
+            p1 = new THREE.Mesh(paddleGeo, new THREE.MeshBasicMaterial());
+            p1.position.x = -COURT_WIDTH/2 + 1.5; p1.userData = {impact:0, lastY:0, targetY:0, velocity: 0};
+            p2 = new THREE.Mesh(paddleGeo, new THREE.MeshBasicMaterial());
+            p2.position.x = COURT_WIDTH/2 - 1.5; p2.userData = {impact:0, lastY:0, targetY:0, velocity: 0};
+            scene.add(p1, p2);
+
+            ball = new THREE.Mesh(new THREE.IcosahedronGeometry(0.4, 1), new THREE.MeshBasicMaterial({transparent:true}));
+            ball.userData = { impact: 0 }; scene.add(ball);
+            
+            ballTrail = createTrail();
+            scene.add(ballTrail);
+
+            particleSystem = new ParticleSystem(scene, 1000);
+            scene.add(p1Debug.group, p2Debug.group);
+            p1Debug.group.visible = gameState.debug.targets; p2Debug.group.visible = gameState.debug.targets;
+            updateScoreboard(true);
+        }
+        
+        function startSequence() {
+            updateColors(0,1);
+            composer.render();
+            renderer.domElement.style.opacity = 1;
+            const splashTitle = document.getElementById('splash-title');
+            splashTitle.addEventListener('animationend', () => {
+                splashTitle.style.display = 'none';
+                document.querySelectorAll('.ui-panel').forEach(el => el.style.opacity = 1);
+                lastTime = performance.now();
+                resetBall(1, true);
+                animate();
+            }, { once: true });
+            splashTitle.classList.add('start-animation');
+        }
+
+        function setupUI() {
+            const ui = document.getElementById('ui-container');
+            const toggleBtn = document.getElementById('ui-toggle-button');
+            const muteBtn = document.getElementById('mute-button');
+            const hide = ()=>{ui.classList.add('hidden'); toggleBtn.textContent="[ SHOW ]";};
+            const show = ()=>{ui.classList.remove('hidden'); toggleBtn.textContent="[ HIDE ]";};
+            const initAudio = () => { audioEngine.init(); document.body.removeEventListener('click', initAudio); document.body.removeEventListener('keydown', initAudio); };
+            document.body.addEventListener('click', initAudio);
+            document.body.addEventListener('keydown', initAudio);
+            
+            toggleBtn.addEventListener('click', ()=>{audioEngine.playSound('uiClick'); ui.classList.contains('hidden')?show():hide();});
+            muteBtn.addEventListener('click', ()=>{audioEngine.playSound('uiClick'); audioEngine.toggleMute();});
+            window.addEventListener('keydown', (e) => { if(e.key.toLowerCase()==='h') ui.classList.contains('hidden')?show():hide(); });
+            
+            document.querySelectorAll('input').forEach(input => input.addEventListener('input', () => audioEngine.playSound('uiClick')));
+            document.getElementById('speed-slider').addEventListener('input', (e) => gameState.gameSpeed = parseFloat(e.target.value));
+            document.getElementById('ai-predict-slider').addEventListener('input', (e) => gameState.ai.prediction = parseFloat(e.target.value));
+            document.getElementById('ai-error-slider').addEventListener('input', (e) => gameState.ai.error = parseFloat(e.target.value));
+            document.getElementById('debug-target-toggle').addEventListener('change', (e) => { gameState.debug.targets = e.target.checked; p1Debug.group.visible = p2Debug.group.visible = e.target.checked; });
+            document.getElementById('debug-data-toggle').addEventListener('change', (e) => gameState.debug.data = e.target.checked );
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        // CORE LOOP
+        function animate(time) {
+            time=time||0;
+            const delta = time - lastTime;
+            lastTime = time;
+            requestAnimationFrame(animate);
+
+            const timeScale = delta * 0.001 * gameState.gameSpeed * 60;
+            if (isNaN(timeScale) || timeScale <= 0) return;
+
+            const fpsCounter = document.getElementById('fps-counter');
+            const frameCount = Math.round(1 / (delta * 0.001));
+            fpsCounter.textContent = `${frameCount} FPS`;
+
+            updatePaddlesAI(timeScale, delta * 0.001); updateBall(timeScale); ghostBalls.forEach(b=>updateBall(timeScale,b));
+            updatePowerups(timeScale); particleSystem.update(timeScale); updateColors(time, timeScale);
+            updateAnimations(time, timeScale); 
+            updateTrail(ball, ballTrail, timeScale);
+            ghostBalls.forEach(gb => updateTrail(gb, gb.userData.trail, timeScale));
+            if (notificationMesh) updateNotification(timeScale);
+            if (gameState.debug.targets) { updateDebugVisuals(); updateCrosshairs(); }
+            crosshairH.visible = crosshairV.visible = gameState.debug.targets;
+            if (gameState.debug.data) updateDebugDataHTML();
+            p1DataEl.style.display = p2DataEl.style.display = gameState.debug.data ? 'block' : 'none';
+            
+            composer.render();
+        }
+
+        // UPDATES
+        function updateBall(delta, b=ball) {
+            if(gameState.isServing && b===ball) return;
+            const vel=(b===ball)?gameState.ballVelocity:b.userData.velocity;
+            const dynamicSpeed = gameState.isHyperspeed ? gameState.ballSpeed * 1.7 : gameState.ballSpeed;
+            vel.normalize().multiplyScalar(dynamicSpeed);
+            b.position.add(vel.clone().multiplyScalar(delta));
+
+            const wallY=COURT_HEIGHT/2 - (b.scale.y * 0.4 / 2);
+            if(b.position.y>wallY){b.position.y=wallY;vel.y*=-1;b.userData.impact=1;particleSystem.explode(b.position,new THREE.Color(0x00ffff),25,{s:.1,l:.8,pS:2.5}); audioEngine.playSound('wallHit');}
+            else if(b.position.y<-wallY){b.position.y=-wallY;vel.y*=-1;b.userData.impact=1;particleSystem.explode(b.position,new THREE.Color(0x00ffff),25,{s:.1,l:.8,pS:2.5}); audioEngine.playSound('wallHit');}
+            const p1Box=new THREE.Box3().setFromObject(p1),p2Box=new THREE.Box3().setFromObject(p2);
+            if(new THREE.Box3().setFromObject(b).intersectsBox(p1Box)&&vel.x<0)handlePaddleCollision(p1,b);
+            if(new THREE.Box3().setFromObject(b).intersectsBox(p2Box)&&vel.x>0)handlePaddleCollision(p2,b);
+            if(b===ball){if(b.position.x>COURT_WIDTH/2){p1Score++;resetBall(-1);}else if(b.position.x<-COURT_WIDTH/2){p2Score++;resetBall(1);}}
+            else if(Math.abs(b.position.x)>COURT_WIDTH/2)b.userData.active=false;
+        }
+
+        function handlePaddleCollision(paddle, b) {
+            const vel = (b === ball) ? gameState.ballVelocity : b.userData.velocity;
+            vel.x *= -1;
+            vel.y *= 0.8; 
+
+            if (paddle.userData.hasFlatShot) {
+                vel.y = 0;
+                paddle.userData.hasFlatShot = false;
+            } else {
+                const englishFactor = 0.2;
+                const offset = (b.position.y - paddle.position.y) / (PADDLE_HEIGHT_NORMAL * paddle.scale.y / 2);
+                vel.y += offset * englishFactor;
+
+                // *** PHYSICS FIX: Nerfed momentum transfer to prevent runaway English at high speed ***
+                const paddleVelTransfer = 0.03; 
+                const maxVelTransfer = 0.08; 
+                vel.y += THREE.MathUtils.clamp(paddle.userData.velocity * paddleVelTransfer, -maxVelTransfer, maxVelTransfer);
+
+                const jitterFactor = 0.04;
+                const jitter = (Math.random() - 0.5) * gameState.ai.error * jitterFactor;
+                vel.y += jitter;
+                
+                // *** BUG FIX: Anti-stall logic now only runs on normal hits, not Flat Shots. ***
+                if (Math.abs(vel.y) < 0.001) {
+                    vel.y = (Math.random() - 0.5) * 0.002;
+                }
+            }
+
+            paddle.userData.impact = 1; b.userData.impact = 1;
+            particleSystem.explode(b.position, paddle.material.color, 50, { s: .15, l: 1.2, pS: 3.5 });
+            audioEngine.playSound('paddleHit', { pitch: 120 - Math.abs((b.position.y - paddle.position.y) * 20) });
+            if (b === ball) { gameState.ballSpeed = Math.min(gameState.ballSpeed + 0.005, 0.4); }
+        }
+
+        function updatePaddlesAI(timeScale, rawDelta) {
+            [p1,p2].forEach(p=>{
+                let allIncoming = [ball, ...ghostBalls].filter(b => {
+                    const vel = (b === ball) ? gameState.ballVelocity : b.userData.velocity;
+                    return p === p1 ? vel.x < 0 : vel.x > 0;
+                });
+                let target = allIncoming.length > 0 ? allIncoming.reduce((prev, curr) => prev.position.distanceTo(p.position) < curr.position.distanceTo(p.position) ? prev : curr) : ball;
+                const vel=target===ball?gameState.ballVelocity:target.userData.velocity;
+                const predictedY = target.position.y + vel.y * gameState.ai.prediction;
+                const error = (Math.random()-0.5)*gameState.ai.error;
+                p.userData.targetY = predictedY + error;
+                const lerpFactor = 1 - Math.pow(1 - 0.11, timeScale);
+                const newY = THREE.MathUtils.lerp(p.position.y, p.userData.targetY, lerpFactor);
+                p.userData.velocity = (newY - p.position.y) / (rawDelta || 1/60);
+                p.position.y = newY;
+                const halfHeight=(PADDLE_HEIGHT_NORMAL*p.scale.y)/2;
+                p.position.y = THREE.MathUtils.clamp(p.position.y,-COURT_HEIGHT/2+halfHeight,COURT_HEIGHT/2-halfHeight);
+            });
+        }
+
+        function updatePowerups(delta) {
+            if(!spawnedPowerup&&Math.random()<POWERUP_SPAWN_CHANCE&&!gameState.isServing){
+                const type=powerupTypes[Math.floor(Math.random()*powerupTypes.length)];
+                spawnedPowerup=new THREE.Mesh(new THREE.DodecahedronGeometry(0.5,0),new THREE.MeshBasicMaterial({color:type.color,wireframe:true}));
+                spawnedPowerup.userData={type:type};
+                spawnedPowerup.position.set((Math.random()-0.5)*(COURT_WIDTH*0.5),(Math.random()-0.5)*(COURT_HEIGHT*0.8),0);
+                scene.add(spawnedPowerup);
+            }
+            if(spawnedPowerup){
+                let p=spawnedPowerup;
+                let allBalls = [ball, ...ghostBalls.filter(gb => gb.userData.active)];
+                if (allBalls.length > 0) {
+                    let closestBall = allBalls.reduce((prev, curr) => prev.position.distanceTo(p.position) < curr.position.distanceTo(p.position) ? prev : curr);
+                    if(p.position.distanceTo(closestBall.position) < POWERUP_MAGNETIC_RADIUS){ p.position.add(new THREE.Vector3().subVectors(closestBall.position,p.position).normalize().multiplyScalar(POWERUP_MAGNETIC_FORCE*delta)); }
+                }
+
+                p.rotation.x+=0.02*delta; p.rotation.y+=0.02*delta;
+
+                for (let currentBall of allBalls) {
+                    if(new THREE.Box3().setFromObject(currentBall).intersectsBox(new THREE.Box3().setFromObject(p))){
+                        const vel = currentBall === ball ? gameState.ballVelocity : currentBall.userData.velocity;
+                        const collector = (vel.x > 0) ? p1 : p2;
+                        p.userData.type.apply(collector,collector===p1?p2:p1);
+                        particleSystem.explode(p.position,p.material.color,150,{s:.2,l:1.8,pS:4.5});
+                        audioEngine.playSound('powerup');
+                        showNotification(p.userData.type.name);
+                        scene.remove(spawnedPowerup);spawnedPowerup=null;
+                        break; 
+                    }
+                }
+            }
+        }
+        
+        function updateAnimations(time,delta){
+            [p1, p2].forEach(p => {
+                let targetScaleY = 1.0;
+                if (p.userData.isBig) targetScaleY = 2.5; 
+                if (p.userData.isSmall) targetScaleY = 0.35; 
+                if (p.userData.impact > 0) {
+                    p.userData.impact -= 0.08 * delta;
+                    const impactScale = Math.sin(p.userData.impact * Math.PI);
+                    p.scale.x = 1 + impactScale * 0.4;
+                    p.scale.y = THREE.MathUtils.lerp(p.scale.y, targetScaleY - impactScale * (targetScaleY * 0.4), 0.5);
+                } else {
+                    const wiggle = Math.sin(time * 3 + p.position.x) * 0.04;
+                    p.scale.y = THREE.MathUtils.lerp(p.scale.y, targetScaleY + wiggle, 0.1);
+                    p.scale.x = 1 - Math.abs(wiggle) * 0.5;
+                }
+            });
+            
+            let targetBallScale = ball.userData.isBig ? 2.5 : 1.0;
+            if(ball.userData.impact > 0){
+                ball.userData.impact -= 0.08 * delta;
+                const impactScale = Math.sin(ball.userData.impact * Math.PI);
+                ball.scale.x = targetBallScale * (1 + impactScale * 0.6);
+                ball.scale.y = targetBallScale * (1 - impactScale * 0.6);
+            } else {
+                const speed = gameState.ballVelocity.length() * 1.8;
+                ball.scale.x = targetBallScale * (1 + speed);
+                ball.scale.y = targetBallScale * (1 - speed);
+                ball.rotation.z = Math.atan2(gameState.ballVelocity.y, gameState.ballVelocity.x);
+            }
+        }
+        
+        function updateColors(time,delta){
+            hue=(hue+0.4*delta)%360;
+            const p1Hue = hue/360;
+            p1.material.color.setHSL(p1Hue, 1, 0.5);
+            p2.material.color.setHSL((p1Hue + 0.5) % 1, 1, 0.5);
+            ball.material.color.setHSL((hue+90)/360, 0.8, 0.6);
+            
+            backgroundPlane.rotation.z += 0.001 * delta;
+            backgroundPlane2.rotation.z -= 0.0012 * delta;
+            const bgGeo=backgroundPlane.geometry;
+            const colors=[];
+            const c1=new THREE.Color().setHSL((hue+180)/360,1,0.05);
+            const c2=new THREE.Color().setHSL((hue+270)/360,1,0.05);
+            const c3=new THREE.Color().setHSL((hue)/360,1,0.05);
+            const c4=new THREE.Color().setHSL((hue+90)/360,1,0.05);
+            colors.push(c1.r,c1.g,c1.b,c2.r,c2.g,c2.b,c3.r,c3.g,c3.b,c4.r,c4.g,c4.b);
+            bgGeo.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
+            backgroundPlane2.geometry.setAttribute('color',new THREE.Float32BufferAttribute(colors.reverse(),3));
+        }
+
+        function updateTrail(obj, trail, delta) {
+            obj.userData.trailCounter = (obj.userData.trailCounter || 0) + delta;
+            if (obj.userData.trailCounter < 1) return;
+            obj.userData.trailCounter = 0;
+            const positions = trail.geometry.attributes.position.array;
+            for (let i = TRAIL_LENGTH - 1; i > 0; i--) { positions[i*3]=positions[(i-1)*3]; positions[i*3+1]=positions[(i-1)*3+1]; }
+            positions[0] = obj.position.x; positions[1] = obj.position.y;
+            const colors = new Float32Array(TRAIL_LENGTH * 3);
+            for (let i = 0; i < TRAIL_LENGTH; i++) { const color = obj.material.color.clone().multiplyScalar(1 - (i / TRAIL_LENGTH)); colors[i*3]=color.r; colors[i*3+1]=color.g; colors[i*3+2]=color.b; }
+            trail.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            trail.geometry.attributes.position.needsUpdate = true;
+        }
+
+        class ParticleSystem {
+            constructor(scene,count){this.pool=[];const m=new THREE.PointsMaterial({size:1,vertexColors:true,blending:THREE.AdditiveBlending,transparent:true,depthWrite:false,sizeAttenuation:true});this.mesh=new THREE.Points(new THREE.BufferGeometry(),m);this.activeCount=0;this.positions=new Float32Array(count*3);this.colors=new Float32Array(count*3);this.sizes=new Float32Array(count);this.mesh.geometry.setAttribute('position',new THREE.BufferAttribute(this.positions,3));this.mesh.geometry.setAttribute('color',new THREE.BufferAttribute(this.colors,3));this.mesh.geometry.setAttribute('size',new THREE.BufferAttribute(this.sizes,1));for(let i=0;i<count;i++)this.pool.push({life:0,velocity:new THREE.Vector3(),color:new THREE.Color()});scene.add(this.mesh);}
+            explode(pos,col,count,opt={}){const s=opt.s||0.1;const l=opt.l||1;const pS=opt.pS||1;let trig=0;for(let i=0;i<this.pool.length;i++){if(trig>=count)break;let p=this.pool[i];if(p.life<=0){p.life=l+Math.random()*l*0.5;p.position=pos.clone();const a=Math.random()*2*Math.PI;const sp=Math.random()*s;p.velocity.set(Math.cos(a)*sp,Math.sin(a)*sp,0);p.color.set(col).lerp(new THREE.Color(0xffffff),Math.random()*0.5);p.size=pS;if(i>=this.activeCount)this.activeCount=i+1;trig++;}}}
+            update(delta){let j=0;for(let i=0;i<this.activeCount;i++){const p=this.pool[i];if(p.life>0){p.life-=0.02*delta;p.velocity.multiplyScalar(0.98);p.position.add(p.velocity.clone().multiplyScalar(delta));this.positions[j*3]=p.position.x;this.positions[j*3+1]=p.position.y;this.positions[j*3+2]=p.position.z;const c=p.color.clone().multiplyScalar(Math.max(0,p.life));this.colors[j*3]=c.r;this.colors[j*3+1]=c.g;this.colors[j*3+2]=c.b;this.sizes[j]=p.size*Math.max(0,p.life);j++;}}this.activeCount=j;this.mesh.geometry.attributes.position.needsUpdate=true;this.mesh.geometry.attributes.color.needsUpdate=true;this.mesh.geometry.attributes.size.needsUpdate=true;this.mesh.geometry.setDrawRange(0,this.activeCount);}
+        }
+        
+        // HELPER FUNCTIONS
+        function createTrail() {
+            const trailGeo = new THREE.BufferGeometry();
+            trailGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TRAIL_LENGTH*3), 3));
+            return new THREE.Line(trailGeo, new THREE.LineBasicMaterial({vertexColors:true}));
+        }
+        function resetBall(dir=1, isInitial = false) {
+            if(!isInitial) audioEngine.playSound('score');
+            
+            gameState.isServing = true;
+            gameState.ballSpeed = 0.15;
+            ball.position.set(0, 0, 0);
+            p1.userData = {...p1.userData, isBig: false, isSmall: false, hasFlatShot: false};
+            p2.userData = {...p2.userData, isBig: false, isSmall: false, hasFlatShot: false};
+            ball.userData.isBig = false;
+            gameState.isHyperspeed = false;
+            if (spawnedPowerup) { scene.remove(spawnedPowerup); spawnedPowerup = null; }
+            ghostBalls.forEach(gb => { scene.remove(gb); scene.remove(gb.userData.trail); });
+            ghostBalls = [];
+            ballTrail.geometry.attributes.position.array.fill(0);
+            ballTrail.geometry.attributes.position.needsUpdate = true;
+            
+            updateScoreboard(isInitial);
+            
+            const serveDelay = isInitial ? 500 : 1000;
+            setTimeout(() => {
+                gameState.ballVelocity.set(dir, Math.random() - 0.5, 0).normalize().multiplyScalar(gameState.ballSpeed);
+                gameState.isServing = false;
+            }, serveDelay);
+        }
+        function createGhostBalls(){for(let i=0;i<2;i++){const g=ball.clone();g.material=ball.material.clone();g.material.opacity=0.7;g.userData={velocity:gameState.ballVelocity.clone().applyAxisAngle(new THREE.Vector3(0,0,1),(Math.random()-0.5)*1.5),active:true,impact:0, trail: createTrail()};scene.add(g); scene.add(g.userData.trail);ghostBalls.push(g);}}
+        function showNotification(text){if(notificationMesh)scene.remove(notificationMesh);const g=new TextGeometry(text,{font,size:1,height:0.1});g.center();notificationMesh=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:0xffffff,transparent:true}));notificationMesh.userData.life=1.5;notificationMesh.scale.set(0.1,0.1,0.1);scene.add(notificationMesh);}
+        function updateNotification(delta){if(!notificationMesh)return;notificationMesh.userData.life-=delta*0.02;const life=notificationMesh.userData.life;if(life<=0){scene.remove(notificationMesh);notificationMesh=null;return;}const scale=Math.sin((1.5-life)/1.5*Math.PI)*1.2;notificationMesh.scale.set(scale,scale,scale);notificationMesh.material.opacity=Math.min(1,life);}
+        function updateDebugVisuals(){[p1,p2].forEach(p=>{const d=(p===p1)?p1Debug:p2Debug;if(!d.targetLine){const g=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3()]);d.targetLine=new THREE.Line(g,new THREE.LineBasicMaterial({transparent:true,opacity:0.5}));d.group.add(d.targetLine);}d.targetLine.material.color.set(p.material.color);const pos=d.targetLine.geometry.attributes.position.array;pos[0]=p.position.x;pos[1]=p.position.y;pos[3]=p.position.x;pos[4]=p.userData.targetY;d.targetLine.geometry.attributes.position.needsUpdate=true;});}
+        function updateCrosshairs(){crosshairH.position.y=ball.position.y;crosshairV.position.x=ball.position.x;}
+        function worldToScreen(vector, el) {const screenPos=vector.clone().project(camera);el.style.left=`${(screenPos.x+1)/2*window.innerWidth}px`;el.style.top=`${(-screenPos.y+1)/2*window.innerHeight}px`;}
+        function updateDebugDataHTML(){[p1,p2].forEach(p=>{const el=(p===p1)?p1DataEl:p2DataEl;const speed=p.userData.velocity; const offset=p.userData.targetY-p.position.y;el.style.color=`#${p.material.color.getHexString()}`;el.innerHTML=`Offset: ${offset.toFixed(2)}<br>Speed: ${speed.toFixed(2)}<br>Scale: ${p.scale.y.toFixed(2)}<br>Target: ${p.userData.targetY.toFixed(2)}`;worldToScreen(p.position, el);el.style.transform=p===p1?`translate(25px,-50%)`:`translate(-125%,-50%)`;});}
+        function updateScoreboard(isInitial=false){
+            if (isInitial) {
+                p1Score = 0;
+                p2Score = 0;
+            }
+            if(p1ScoreMesh)scene.remove(p1ScoreMesh);if(p2ScoreMesh)scene.remove(p2ScoreMesh);
+            const m=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.5});
+            const o={font,size:3,height:0.2};
+            let g1=new TextGeometry(p1Score.toString(),o);
+            g1.center();
+            p1ScoreMesh=new THREE.Mesh(g1,m);
+            p1ScoreMesh.position.set(-COURT_WIDTH/4,0,-2);
+            let g2=new TextGeometry(p2Score.toString(),o);
+            g2.center();
+            p2ScoreMesh=new THREE.Mesh(g2,m);
+            p2ScoreMesh.position.set(COURT_WIDTH/4,0,-2);
+            scene.add(p1ScoreMesh,p2ScoreMesh);
+        }
+        function onWindowResize(){const a=window.innerWidth/window.innerHeight;camera.left=-COURT_WIDTH/2;camera.right=COURT_WIDTH/2;camera.top=(COURT_WIDTH/a)/2;camera.bottom=-(COURT_WIDTH/a)/2;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);composer.setSize(window.innerWidth,window.innerHeight);}
+        init();
+    </script>
+</body>
+</html>
